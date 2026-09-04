@@ -1,0 +1,22 @@
+# Environment
+.env
+.venv/
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Build / dist
+dist/
+build/
+*.egg-info/
+
+# IDE
+.vscode/settings.json
+.idea/
+
+# uv
+.python-version
+
+# Go
+fortify-sca-mcp
+bin/

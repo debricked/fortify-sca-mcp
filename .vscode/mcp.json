@@ -1,0 +1,19 @@
+{
+	"inputs": [
+		{
+			"type": "promptString",
+			"id": "fortify-sca-token",
+			"description": "Fortify SCA access token",
+			"password": true
+		}
+	],
+	"servers": {
+		"fortify-sca-mcp": {
+			"type": "stdio",
+			"command": "path_name_to_fortify-sca-mcp",
+			"env": {
+				"FORTIFY_SCA_ACCESS_TOKEN": "${input:fortify-sca-token}"
+			}
+		}
+	}
+}
