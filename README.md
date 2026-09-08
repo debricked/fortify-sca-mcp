@@ -43,6 +43,41 @@ Optional:
 go build -o fortify-sca-mcp .
 ```
 
+## Use From Another Go Module
+
+The public integration package is `github.com/debricked/Fortify-SCA-MCP/pkg/server`.
+Packages under `internal/` are implementation details and cannot be imported by a different
+module. The `pkg` directory is a public-package convention; exported identifiers such as
+`server.Serve` are the actual integration API.
+
+For a host application such as the future Debricked CLI, run the MCP server with host-supplied
+configuration and streams:
+
+```go
+import (
+	"context"
+	"io"
+
+	"github.com/debricked/Fortify-SCA-MCP/pkg/server"
+)
+
+func runFortifySCAMCP(ctx context.Context, accessToken string, input io.Reader, output io.Writer) error {
+	return server.Serve(ctx, server.Options{
+		AccessToken: accessToken,
+		BaseURL:     "https://debricked.com",
+		APIVersion:  "1.0",
+	}, input, output)
+}
+```
+
+The host owns authentication, context cancellation, and stream lifecycle. The CLI does not need
+to import or use the MCP SDK directly. The package does not read the host's environment or
+process stdio.
+
+The standalone executable loads `FORTIFY_SCA_ACCESS_TOKEN`, `FORTIFY_SCA_BASE_URL`, and
+`FORTIFY_SCA_API_VERSION` in `main.go`, handles process signals there, and calls the same
+`server.Serve` function over stdin/stdout.
+
 ## Run
 
 ```bash
