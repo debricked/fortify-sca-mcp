@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"fortify-sca-mcp/internal/auth"
+	"github.com/debricked/Fortify-SCA-MCP/internal/auth"
 )
 
 type stubProvider struct {

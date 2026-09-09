@@ -4,20 +4,30 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
-	"os"
-	"os/signal"
-	"syscall"
+	"strings"
 
-	"fortify-sca-mcp/internal/auth"
-	"fortify-sca-mcp/internal/config"
-	"fortify-sca-mcp/internal/fortifysca"
-	"fortify-sca-mcp/internal/validators"
+	"github.com/debricked/Fortify-SCA-MCP/internal/client"
+	"github.com/debricked/Fortify-SCA-MCP/internal/policy"
+	"github.com/debricked/Fortify-SCA-MCP/internal/validators"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 const unavailableRecommendation = "POLICY_CHECK_UNAVAILABLE"
+
+const (
+	defaultBaseURL    = "https://debricked.com"
+	defaultAPIVersion = "1.0"
+)
+
+// Options configures a Fortify SCA MCP server.
+type Options struct {
+	AccessToken string
+	BaseURL     string
+	APIVersion  string
+}
 
 type CheckDependencyPolicyInput struct {
 	PURL     string `json:"purl" jsonschema:"Package URL of the dependency (e.g. pkg:npm/lodash@4.17.21)"`
@@ -25,59 +35,60 @@ type CheckDependencyPolicyInput struct {
 	RepoName string `json:"repo_name" jsonschema:"Repository slug with owner/org prefix (e.g. my-org/my-repo)"`
 }
 
-type PolicyChecker interface {
-	CheckDependencyPolicy(ctx context.Context, purl, repoURL, repoName string) (map[string]any, error)
+// Serve creates and runs a Fortify SCA MCP server over the supplied streams.
+// The caller owns configuration, context cancellation, and stream lifecycle.
+func Serve(ctx context.Context, options Options, input io.Reader, output io.Writer) error {
+	if input == nil {
+		return errors.New("input stream is required")
+	}
+	if output == nil {
+		return errors.New("output stream is required")
+	}
+
+	server, err := newServer(options)
+	if err != nil {
+		return err
+	}
+
+	return server.Run(ctx, &mcp.IOTransport{
+		Reader: io.NopCloser(input),
+		Writer: noOpWriteCloser{Writer: output},
+	})
 }
 
-func Run() error {
-	cfg, err := config.Load()
-	if err != nil {
-		slog.Error("configuration load failed", "error", err)
-		return err
+func newServer(options Options) (*mcp.Server, error) {
+	options.AccessToken = strings.TrimSpace(options.AccessToken)
+	options.BaseURL = strings.TrimRight(strings.TrimSpace(options.BaseURL), "/")
+	options.APIVersion = strings.TrimSpace(options.APIVersion)
+
+	if options.AccessToken == "" {
+		return nil, errors.New("access token is required")
+	}
+	if options.BaseURL == "" {
+		options.BaseURL = defaultBaseURL
+	}
+	if options.APIVersion == "" {
+		options.APIVersion = defaultAPIVersion
 	}
 
-	if cfg.Transport != "stdio" {
-		err := fmt.Errorf("unsupported transport: %s", cfg.Transport)
-		slog.Error("startup failed", "error", err)
-		return err
-	}
-
-	slog.Info("starting fortify sca mcp server",
-		"transport", cfg.Transport,
-		"fortify_sca_base_url", cfg.FortifyBaseURL,
-		"fortify_sca_api_version", cfg.FortifyVersion,
-	)
-
-	provider := auth.NewRefreshTokenProvider(cfg.FortifyBaseURL, cfg.FortifyAccessToken)
-	checker := fortifysca.NewClient(cfg.FortifyBaseURL, cfg.FortifyVersion, provider)
+	checker := client.New(options.BaseURL, options.APIVersion, options.AccessToken)
 	server := mcp.NewServer(&mcp.Implementation{Name: "Fortify SCA MCP", Version: "1.0.0"}, nil)
+	registerTools(server, checker)
+	return server, nil
+}
 
+func registerTools(server *mcp.Server, checker policy.Checker) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "check_dependency_policy_compliance",
 		Description: "Check whether a dependency is allowed by Fortify SCA policies before installation.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input CheckDependencyPolicyInput) (*mcp.CallToolResult, map[string]any, error) {
-		return nil, HandleCheckDependencyPolicyCompliance(ctx, checker, input.PURL, input.RepoURL, input.RepoName), nil
+		return nil, handleCheckDependencyPolicyCompliance(ctx, checker, input.PURL, input.RepoURL, input.RepoName), nil
 	})
-
-	runCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	slog.Info("server ready, listening on stdio transport")
-	err = server.Run(runCtx, &mcp.StdioTransport{})
-	if err != nil {
-		if errors.Is(err, context.Canceled) || runCtx.Err() == context.Canceled {
-			slog.Info("shutdown signal received, stopping server")
-			return nil
-		}
-		return err
-	}
-
-	return nil
 }
 
-func HandleCheckDependencyPolicyCompliance(
+func handleCheckDependencyPolicyCompliance(
 	ctx context.Context,
-	checker PolicyChecker,
+	checker policy.Checker,
 	purl string,
 	repoURL string,
 	repoName string,
@@ -94,19 +105,19 @@ func HandleCheckDependencyPolicyCompliance(
 	}
 
 	switch {
-	case errors.Is(err, fortifysca.ErrUnauthorized):
+	case errors.Is(err, client.ErrUnauthorized):
 		slog.Error("fortify sca auth rejected", "error", err, "repo_name", repoName)
 		return unavailable("Unauthorized. Please check your FORTIFY_SCA_ACCESS_TOKEN.")
-	case errors.Is(err, fortifysca.ErrAuth):
+	case errors.Is(err, client.ErrAuth):
 		slog.Error("fortify sca authentication failed", "error", err, "repo_name", repoName)
 		return unavailable("Unable to authenticate with the Fortify SCA API.")
-	case errors.Is(err, fortifysca.ErrEnterprise):
+	case errors.Is(err, client.ErrEnterprise):
 		slog.Warn("fortify sca plan does not support policy checks", "repo_name", repoName)
 		return unavailable("Policy checks require a Fortify SCA Enterprise plan.")
-	case errors.Is(err, fortifysca.ErrTimeout):
+	case errors.Is(err, client.ErrTimeout):
 		slog.Error("fortify sca request timed out", "error", err, "repo_name", repoName)
 		return unavailable("Request to Fortify SCA API timed out.")
-	case errors.Is(err, fortifysca.ErrAPIStatus):
+	case errors.Is(err, client.ErrAPIStatus):
 		slog.Error("fortify sca api returned an error status", "error", err, "repo_name", repoName)
 		return unavailable(fmt.Sprintf("API error: %s", err.Error()))
 	default:

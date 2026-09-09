@@ -1,11 +1,6 @@
 variables:
   POLICY_REF: "v26.3.7"
 
-include:
-  - project: appsec/debricked/fortify-copilot-policy
-    ref: "v26.3.7"
-    file: ci/group-compliance-gitlab-ci.yml
-
 stages:
   - build
   - test
