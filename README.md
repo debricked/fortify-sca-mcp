@@ -90,6 +90,21 @@ The standalone executable loads `FORTIFY_SCA_ACCESS_TOKEN`, `FORTIFY_SCA_BASE_UR
 go test ./...
 ```
 
+## Release
+
+Releases are source-only Go module releases. Push a semantic-version tag such as `v26.3.0` to
+run the release workflow. It runs the test and build checks, then creates a GitHub Release with
+automatically generated notes. GitHub provides the tagged source as `.tar.gz` and `.zip` archives.
+
+The module version comes from the Git tag:
+
+```bash
+go get github.com/debricked/Fortify-SCA-MCP@v26.3.0
+```
+
+This project does not upload binary or checksum assets for the module release. The MCP metadata
+version and Fortify SCA API version are independent of the Go module tag.
+
 ## Tool Contract
 
 Tool name:
