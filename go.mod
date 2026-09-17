@@ -1,4 +1,4 @@
-module github.com/debricked/Fortify-SCA-MCP
+module github.com/debricked/fortify-sca-mcp/v26
 
 go 1.27.1
 

@@ -8,9 +8,9 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/debricked/Fortify-SCA-MCP/internal/client"
-	"github.com/debricked/Fortify-SCA-MCP/internal/policy"
-	"github.com/debricked/Fortify-SCA-MCP/internal/validators"
+	"github.com/debricked/fortify-sca-mcp/v26/internal/client"
+	"github.com/debricked/fortify-sca-mcp/v26/internal/policy"
+	"github.com/debricked/fortify-sca-mcp/v26/internal/validators"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )

@@ -45,7 +45,7 @@ go build -o fortify-sca-mcp .
 
 ## Use From Another Go Module
 
-The public integration package is `github.com/debricked/Fortify-SCA-MCP/pkg/server`.
+The public integration package is `github.com/debricked/fortify-sca-mcp/v26/pkg/server`.
 Packages under `internal/` are implementation details and cannot be imported by a different
 module. The `pkg` directory is a public-package convention; exported identifiers such as
 `server.Serve` are the actual integration API.
@@ -58,7 +58,7 @@ import (
 	"context"
 	"io"
 
-	"github.com/debricked/Fortify-SCA-MCP/pkg/server"
+	"github.com/debricked/fortify-sca-mcp/v26/pkg/server"
 )
 
 func runFortifySCAMCP(ctx context.Context, accessToken string, input io.Reader, output io.Writer) error {
@@ -92,14 +92,17 @@ go test ./...
 
 ## Release
 
-Releases are source-only Go module releases. Push a semantic-version tag such as `v26.3.0` to
+Releases are source-only Go module releases. Push a semantic-version tag such as `v26.4.0` to
 run the release workflow. It runs the test and build checks, then creates a GitHub Release with
 automatically generated notes. GitHub provides the tagged source as `.tar.gz` and `.zip` archives.
+
+The module path declares major version 26 (`.../v26`), so tags must be `v26.x.y` per Go's semantic
+import versioning rules.
 
 The module version comes from the Git tag:
 
 ```bash
-go get github.com/debricked/Fortify-SCA-MCP@v26.3.0
+go get github.com/debricked/fortify-sca-mcp/v26@v26.4.0
 ```
 
 This project does not upload binary or checksum assets for the module release. The MCP metadata
