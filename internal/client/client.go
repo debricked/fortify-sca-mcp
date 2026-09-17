@@ -1,8 +1,8 @@
 package client
 
 import (
-	"github.com/debricked/Fortify-SCA-MCP/internal/auth"
-	"github.com/debricked/Fortify-SCA-MCP/internal/fortifysca"
+	"github.com/debricked/fortify-sca-mcp/v26/internal/auth"
+	"github.com/debricked/fortify-sca-mcp/v26/internal/fortifysca"
 )
 
 // PolicyChecker is the client capability required by the policy domain.

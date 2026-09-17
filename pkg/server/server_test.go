@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/debricked/Fortify-SCA-MCP/internal/client"
+	"github.com/debricked/fortify-sca-mcp/v26/internal/client"
 )
 
 type fakeChecker struct {

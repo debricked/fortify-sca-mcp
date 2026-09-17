@@ -9,8 +9,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/debricked/Fortify-SCA-MCP/internal/config"
-	"github.com/debricked/Fortify-SCA-MCP/pkg/server"
+	"github.com/debricked/fortify-sca-mcp/v26/internal/config"
+	"github.com/debricked/fortify-sca-mcp/v26/pkg/server"
 )
 
 func main() {
