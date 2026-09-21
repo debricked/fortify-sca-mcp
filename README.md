@@ -135,3 +135,28 @@ Failure mode:
 - returns recommendation `POLICY_CHECK_UNAVAILABLE` with an actionable `reason`
   when input validation fails, Fortify SCA API auth/plan checks fail, network
   timeout occurs, or other API/runtime errors occur.
+
+## Automatic Invocation
+
+The server ships MCP `instructions` (sent on `initialize`) and a trigger-rich tool description so
+agents call `check_dependency_policy_compliance` on their own whenever a dependency is added,
+installed, upgraded, imported, or recommended — without the user naming the tool.
+
+Some hosts ignore or down-weight server instructions. To make invocation reliable in a consuming
+repository, also add a repo-level instruction file. For GitHub Copilot, create
+`.github/copilot-instructions.md`:
+
+```markdown
+## Dependency policy
+
+Before adding, installing, upgrading, or recommending any third-party dependency, call the
+`check_dependency_policy_compliance` MCP tool for each package. This includes editing manifests or
+lockfiles, running install commands (`npm install`, `pip install`, `go get`, `cargo add`, ...),
+importing a package that is not already declared, and completing a feature that needs a new library.
+
+Never add a dependency before the check returns. If the recommendation blocks the package, do not
+add it — explain why and propose a compliant alternative. If the result is
+`POLICY_CHECK_UNAVAILABLE`, surface that to the user before proceeding.
+```
+
+Equivalent files for other agents: `AGENTS.md`, `CLAUDE.md`, or `.cursor/rules/`.
