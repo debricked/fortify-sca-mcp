@@ -155,7 +155,7 @@ lockfiles, running install commands (`npm install`, `pip install`, `go get`, `ca
 importing a package that is not already declared, and completing a feature that needs a new library.
 
 Never add a dependency before the check returns. If the recommendation blocks the package, do not
-add it — explain why and propose a compliant alternative. If the result is
+add it — explain why and propose a compliant alternative (Max 3 attempts). If the result is
 `POLICY_CHECK_UNAVAILABLE`, surface that to the user before proceeding.
 ```
 
