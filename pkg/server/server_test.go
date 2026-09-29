@@ -121,6 +121,19 @@ func TestNewServer_CreatesServerWithHostSuppliedOptions(t *testing.T) {
 	}
 }
 
+func TestNewServer_AcceptsTokenFetcherWithoutAccessToken(t *testing.T) {
+	server, err := newServer(Options{
+		TokenFetcher: func(context.Context) (string, error) { return "bearer-1", nil },
+		BaseURL:      "https://fortify.example/",
+	})
+	if err != nil {
+		t.Fatalf("expected server construction to succeed, got %v", err)
+	}
+	if server == nil {
+		t.Fatal("expected configured server")
+	}
+}
+
 func TestServe_RequiresStreams(t *testing.T) {
 	tests := []struct {
 		name   string

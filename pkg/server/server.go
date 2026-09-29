@@ -71,8 +71,13 @@ could not be evaluated and must be surfaced to the user.`
 // Options configures a Fortify SCA MCP server.
 type Options struct {
 	AccessToken string
-	BaseURL     string
-	APIVersion  string
+	// TokenFetcher, if set, is called on demand for a currently-valid bearer token,
+	// taking precedence over AccessToken. Use this when the caller already owns
+	// token refresh (e.g. an existing OAuth session) instead of a long-lived
+	// credential this server would otherwise exchange itself via /api/login_refresh.
+	TokenFetcher func(ctx context.Context) (string, error)
+	BaseURL      string
+	APIVersion   string
 }
 
 type CheckDependencyPolicyInput struct {
@@ -107,7 +112,7 @@ func newServer(options Options) (*mcp.Server, error) {
 	options.BaseURL = strings.TrimRight(strings.TrimSpace(options.BaseURL), "/")
 	options.APIVersion = strings.TrimSpace(options.APIVersion)
 
-	if options.AccessToken == "" {
+	if options.AccessToken == "" && options.TokenFetcher == nil {
 		return nil, errors.New("access token is required")
 	}
 	if options.BaseURL == "" {
@@ -117,7 +122,12 @@ func newServer(options Options) (*mcp.Server, error) {
 		options.APIVersion = defaultAPIVersion
 	}
 
-	checker := client.New(options.BaseURL, options.APIVersion, options.AccessToken)
+	var checker policy.Checker
+	if options.TokenFetcher != nil {
+		checker = client.NewWithTokenFetcher(options.BaseURL, options.APIVersion, options.TokenFetcher)
+	} else {
+		checker = client.New(options.BaseURL, options.APIVersion, options.AccessToken)
+	}
 	server := mcp.NewServer(&mcp.Implementation{Name: "Fortify SCA MCP", Version: "1.0.0"}, &mcp.ServerOptions{
 		Instructions: serverInstructions,
 	})

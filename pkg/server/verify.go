@@ -17,7 +17,7 @@ var (
 	ErrLoginResponse = auth.ErrLoginResponse
 )
 
-// VerifyAccessToken checks that options.AccessToken can be exchanged for a
+// VerifyAccessToken checks that options.AccessToken (or TokenFetcher) can produce a
 // short-lived bearer token, without registering or running any MCP tools.
 // It lets a caller fail fast on bad credentials before starting the stdio
 // server, rather than only discovering the problem on the first tool call.
@@ -25,14 +25,19 @@ func VerifyAccessToken(ctx context.Context, options Options) error {
 	options.AccessToken = strings.TrimSpace(options.AccessToken)
 	options.BaseURL = strings.TrimRight(strings.TrimSpace(options.BaseURL), "/")
 
-	if options.AccessToken == "" {
+	if options.AccessToken == "" && options.TokenFetcher == nil {
 		return errors.New("access token is required")
 	}
 	if options.BaseURL == "" {
 		options.BaseURL = defaultBaseURL
 	}
 
-	provider := auth.NewRefreshTokenProvider(options.BaseURL, options.AccessToken)
+	var provider auth.TokenProvider
+	if options.TokenFetcher != nil {
+		provider = auth.NewCallbackTokenProvider(options.TokenFetcher)
+	} else {
+		provider = auth.NewRefreshTokenProvider(options.BaseURL, options.AccessToken)
+	}
 	_, err := provider.Token(ctx)
 
 	return err
