@@ -71,3 +71,33 @@ func TestVerifyAccessToken(t *testing.T) {
 		})
 	}
 }
+
+func TestVerifyAccessToken_WithTokenFetcher(t *testing.T) {
+	err := VerifyAccessToken(context.Background(), Options{
+		TokenFetcher: func(context.Context) (string, error) {
+			return "bearer-1", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+}
+
+func TestVerifyAccessToken_TokenFetcherError(t *testing.T) {
+	wantErr := errors.New("no cached login")
+	err := VerifyAccessToken(context.Background(), Options{
+		TokenFetcher: func(context.Context) (string, error) {
+			return "", wantErr
+		},
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("expected %v, got %v", wantErr, err)
+	}
+}
+
+func TestVerifyAccessToken_NeitherAccessTokenNorFetcherSet(t *testing.T) {
+	err := VerifyAccessToken(context.Background(), Options{})
+	if err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+}

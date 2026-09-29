@@ -209,3 +209,74 @@ func TestToken_ErrorDoesNotLeakAccessToken(t *testing.T) {
 		t.Fatalf("unexpected error message: %q", got)
 	}
 }
+
+func TestCallbackTokenProvider_UsesFetcher(t *testing.T) {
+	calls := 0
+	provider := NewCallbackTokenProvider(func(context.Context) (string, error) {
+		calls++
+		return jwtWithExp(time.Now().Add(time.Hour)), nil
+	})
+
+	if _, err := provider.Token(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := provider.Token(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if calls != 1 {
+		t.Fatalf("expected fetcher to be cached and called once, got %d calls", calls)
+	}
+}
+
+func TestCallbackTokenProvider_RefetchesAfterExpiryAndInvalidate(t *testing.T) {
+	calls := 0
+	provider := NewCallbackTokenProvider(func(context.Context) (string, error) {
+		calls++
+		return jwtWithExp(time.Now().Add(time.Hour)), nil
+	})
+
+	if _, err := provider.Token(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	provider.Invalidate()
+	if _, err := provider.Token(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if calls != 2 {
+		t.Fatalf("expected 2 fetch calls after Invalidate, got %d", calls)
+	}
+}
+
+func TestCallbackTokenProvider_PropagatesFetchError(t *testing.T) {
+	wantErr := errors.New("no cached login")
+	provider := NewCallbackTokenProvider(func(context.Context) (string, error) {
+		return "", wantErr
+	})
+
+	_, err := provider.Token(context.Background())
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("expected %v, got %v", wantErr, err)
+	}
+}
+
+func TestCallbackTokenProvider_RejectsEmptyToken(t *testing.T) {
+	provider := NewCallbackTokenProvider(func(context.Context) (string, error) {
+		return "  ", nil
+	})
+
+	_, err := provider.Token(context.Background())
+	if err == nil {
+		t.Fatal("expected error for empty token")
+	}
+}
+
+func TestCallbackTokenProvider_RejectsNilFetcher(t *testing.T) {
+	provider := NewCallbackTokenProvider(nil)
+
+	_, err := provider.Token(context.Background())
+	if err == nil {
+		t.Fatal("expected error for nil fetcher")
+	}
+}

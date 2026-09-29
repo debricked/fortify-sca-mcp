@@ -181,3 +181,67 @@ func isTimeoutError(err error) bool {
 	var netErr net.Error
 	return errors.As(err, &netErr) && netErr.Timeout()
 }
+
+// CallbackTokenProvider adapts a caller-supplied fetch function to TokenProvider,
+// so credential refresh (e.g. an OAuth session) can live entirely with the caller
+// instead of this package re-implementing it. The fetch function must return a
+// currently-valid bearer token; the result is cached using the same JWT-expiry
+// logic as RefreshTokenProvider until Invalidate is called or it expires.
+type CallbackTokenProvider struct {
+	fetch       func(ctx context.Context) (string, error)
+	skew        time.Duration
+	fallbackTTL time.Duration
+	now         func() time.Time
+
+	mu        sync.Mutex
+	cached    string
+	expiresAt time.Time
+}
+
+func NewCallbackTokenProvider(fetch func(ctx context.Context) (string, error)) *CallbackTokenProvider {
+	return &CallbackTokenProvider{
+		fetch:       fetch,
+		skew:        defaultSkew,
+		fallbackTTL: defaultFallbackTTL,
+		now:         time.Now,
+	}
+}
+
+func (p *CallbackTokenProvider) Token(ctx context.Context) (string, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.fetch == nil {
+		return "", errors.New("token fetcher is required")
+	}
+
+	if p.cached != "" && p.now().Before(p.expiresAt) {
+		return p.cached, nil
+	}
+
+	token, err := p.fetch(ctx)
+	if err != nil {
+		return "", err
+	}
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return "", errors.New("token fetcher returned an empty token")
+	}
+
+	if exp, ok := expiryFromJWT(token); ok {
+		p.expiresAt = exp.Add(-p.skew)
+	} else {
+		p.expiresAt = p.now().Add(p.fallbackTTL)
+	}
+	p.cached = token
+
+	return token, nil
+}
+
+func (p *CallbackTokenProvider) Invalidate() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.cached = ""
+	p.expiresAt = time.Time{}
+}
