@@ -7,6 +7,8 @@ import (
 	"io"
 	"log/slog"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/debricked/fortify-sca-mcp/v26/internal/client"
 	"github.com/debricked/fortify-sca-mcp/v26/internal/policy"
@@ -42,14 +44,47 @@ Always call it when you are about to:
   dependency change in a diff or pull request
 - review or audit existing dependencies for policy compliance
 
-Check each package separately, including transitive packages you explicitly pin. If several
-packages are involved, call the tool once per package.
+Check each package, including transitive packages you explicitly pin. Supply one package as a
+one-item purls array. For one user-approved set of alternative candidates, supply all candidates in
+one purls array so they are checked in one API request.
 
-If the result recommendation is to block the dependency, do not add it: tell the user why and
-propose a compliant alternative. If the result is POLICY_CHECK_UNAVAILABLE, say so explicitly and
-let the user decide before proceeding.`
+For alternatives after a block, propose at most five specific versioned package URLs and ask the
+user to approve that exact list before calling "check_dependency_policy_compliance" with purls.
+Approval authorizes checking only, not using blocked packages. If no candidate passes, ask for fresh
+approval before checking another list.
 
-const checkDependencyPolicyDescription = `Check whether a third-party dependency is allowed by this repository's Fortify SCA (Debricked) policies.
+Make the Fortify SCA (Debricked) policy check visible in your final answer. For an approved
+dependency, briefly name the checked package and version and say it passed the Fortify SCA
+(Debricked) policy check. Only report approval for packages actually checked; never claim
+approval or add the package when isPolicyCompliant is false, even if the result is not labeled
+blocked.
+
+If blocked, do not add the dependency. State that Fortify SCA (Debricked) policy blocked it,
+identify the checked package and version, and report every returned blockingRules entry's
+configuredCondition, triggeredBy evidence, and configurationUrl when present. Do not invent
+missing rule details or infer which branch of an OR condition matched. If blockingRulesTruncated
+is true, say the list is incomplete and give blockingRuleCount. Propose potential alternatives
+only as unchecked candidates, not as compliant replacements. Ask the user to select a candidate
+before checking it; do not automatically check a succession of alternatives. Check the selected
+package before recommending or adding it, and only call it compliant after an approved result.
+
+If the result is POLICY_CHECK_UNAVAILABLE, explain the reason and do not claim approval or
+compliance; let the user decide before proceeding. If errorCode is AUTHENTICATION_REQUIRED and
+the authenticate tool is available, ask permission to open browser login, call authenticate with
+confirmed=true only after approval, then retry the original policy check once. Do not repeat
+login if that retry is still unauthorized; report the API host or access issue instead.`
+
+const checkDependencyPolicyDescription = `Check one dependency or a user-approved set of 1 to 5 distinct, versioned dependencies against this repository's Fortify SCA (Debricked) policies.
+
+Provide purls containing one to five distinct, versioned package URLs. The server passes this array
+to the policy API. For alternatives after a block, show the exact list and get the user's
+approval before calling. Approval authorizes checking, not using blocked packages. Get fresh
+approval before checking another list.
+
+The API result contains per-package results and shared blockingRules. Join each result's
+blockingRuleIds to the shared rules by ruleId and use each rule's matches entry for that package's
+triggeredBy evidence. Do not apply one package's evidence to another. Report item errors as
+POLICY_CHECK_UNAVAILABLE and never treat them as approvals.
 
 Call this proactively and automatically BEFORE any dependency is added, installed, upgraded, or
 recommended. Do not wait to be asked to run a policy or compliance check.
@@ -64,9 +99,15 @@ Use it when you are about to:
 - answer whether a package is allowed, compliant, safe, or approved
 - review a dependency change in a diff or pull request
 
-Call once per package. Returns a recommendation plus the reason. Treat a blocking recommendation as
-a hard stop and propose a compliant alternative instead. POLICY_CHECK_UNAVAILABLE means the policy
-could not be evaluated and must be surfaced to the user.`
+Pass one to five package URLs in purls. A successful check returns the API's policy decision, including
+blockingRules with configuredCondition, triggeredBy, and configurationUrl when available.
+In your final answer, briefly name approved packages and versions that passed the Fortify SCA
+(Debricked) policy check. Never claim approval or add a package if isPolicyCompliant is false.
+If blocked, explain every returned rule, link to its configuration when available, and disclose
+when blockingRulesTruncated is true. Do not claim unchecked alternatives
+are compliant or automatically check multiple alternatives; ask the user to choose a candidate
+before checking it. POLICY_CHECK_UNAVAILABLE means the policy could not be evaluated: report its
+reason and do not treat it as approval.`
 
 // Options configures a Fortify SCA MCP server.
 type Options struct {
@@ -76,14 +117,16 @@ type Options struct {
 	// token refresh (e.g. an existing OAuth session) instead of a long-lived
 	// credential this server would otherwise exchange itself via /api/login_refresh.
 	TokenFetcher func(ctx context.Context) (string, error)
+	// Authenticate completes caller-owned browser login without writing to MCP stdout.
+	Authenticate func(ctx context.Context) error
 	BaseURL      string
 	APIVersion   string
 }
 
 type CheckDependencyPolicyInput struct {
-	PURL     string `json:"purl" jsonschema:"Package URL of the dependency to check, including the version being added (e.g. pkg:npm/lodash@4.17.21, pkg:pypi/requests@2.32.3, pkg:golang/github.com/gin-gonic/gin@v1.10.0)"`
-	RepoURL  string `json:"repo_url" jsonschema:"Full git remote URL for the repository (SSH or HTTPS), as reported by 'git remote get-url origin'"`
-	RepoName string `json:"repo_name" jsonschema:"Repository slug with owner/org prefix (e.g. my-org/my-repo), derived from the git remote URL"`
+	PURLs    []string `json:"purls" jsonschema:"One to five distinct, versioned package URLs to check"`
+	RepoURL  string   `json:"repo_url" jsonschema:"Full git remote URL for the repository (SSH or HTTPS), as reported by 'git remote get-url origin'"`
+	RepoName string   `json:"repo_name" jsonschema:"Repository slug with owner/org prefix (e.g. my-org/my-repo), derived from the git remote URL"`
 }
 
 // Serve creates and runs a Fortify SCA MCP server over the supplied streams.
@@ -122,7 +165,7 @@ func newServer(options Options) (*mcp.Server, error) {
 		options.APIVersion = defaultAPIVersion
 	}
 
-	var checker policy.Checker
+	var checker *client.PolicyChecker
 	if options.TokenFetcher != nil {
 		checker = client.NewWithTokenFetcher(options.BaseURL, options.APIVersion, options.TokenFetcher)
 	} else {
@@ -132,7 +175,37 @@ func newServer(options Options) (*mcp.Server, error) {
 		Instructions: serverInstructions,
 	})
 	registerTools(server, checker)
+	if options.Authenticate != nil && options.TokenFetcher != nil {
+		var loginMu sync.Mutex
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "authenticate",
+			Description: "Open Debricked browser login and wait for completion. Ask the user for permission first; pass confirmed=true only after approval. Success loads credentials, not policy approval. Retry the original policy check once afterward.",
+			Annotations: &mcp.ToolAnnotations{
+				ReadOnlyHint: false, DestructiveHint: boolPtr(false), IdempotentHint: false, OpenWorldHint: boolPtr(true),
+			},
+		}, func(ctx context.Context, _ *mcp.CallToolRequest, input AuthenticateInput) (*mcp.CallToolResult, map[string]any, error) {
+			if !input.Confirmed {
+				return nil, map[string]any{"status": "confirmation_required", "message": "Ask the user for permission before opening browser login."}, nil
+			}
+			if !loginMu.TryLock() {
+				return nil, map[string]any{"status": "login_in_progress", "message": "A browser login is already in progress."}, nil
+			}
+			defer loginMu.Unlock()
+			ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+			defer cancel()
+			if err := options.Authenticate(ctx); err != nil {
+				slog.Warn("browser authentication did not complete")
+				return nil, map[string]any{"status": "authentication_failed", "message": "Browser login did not complete. Check the browser, cancellation, or login timeout."}, nil
+			}
+			checker.InvalidateCredentials()
+			return nil, map[string]any{"status": "credentials_loaded", "nextAction": "retry_policy_check", "message": "Login completed. Retry the policy check; credentials do not imply policy approval."}, nil
+		})
+	}
 	return server, nil
+}
+
+type AuthenticateInput struct {
+	Confirmed bool `json:"confirmed" jsonschema:"True only after the user approves opening browser login"`
 }
 
 func registerTools(server *mcp.Server, checker policy.Checker) {
@@ -148,37 +221,38 @@ func registerTools(server *mcp.Server, checker policy.Checker) {
 			OpenWorldHint:   boolPtr(true),
 		},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input CheckDependencyPolicyInput) (*mcp.CallToolResult, map[string]any, error) {
-		return nil, handleCheckDependencyPolicyCompliance(ctx, checker, input.PURL, input.RepoURL, input.RepoName), nil
+		return nil, handleCheckDependencyPolicyRequest(ctx, checker, input), nil
 	})
 }
 
 func boolPtr(v bool) *bool { return &v }
 
-func handleCheckDependencyPolicyCompliance(
+func handleCheckDependencyPolicyRequest(
 	ctx context.Context,
 	checker policy.Checker,
-	purl string,
-	repoURL string,
-	repoName string,
+	input CheckDependencyPolicyInput,
 ) map[string]any {
-	ok, errMsg := validators.ValidateInputs(purl, repoURL, repoName)
-	if !ok {
-		slog.Warn("input validation failed", "reason", errMsg, "repo_name", repoName)
+	purls := input.PURLs
+	if ok, errMsg := validators.ValidateBatchInputs(purls, input.RepoURL, input.RepoName); !ok {
+		slog.Warn("policy input validation failed", "reason", errMsg, "repo_name", input.RepoName)
 		return unavailable(fmt.Sprintf("Invalid input: %s", errMsg))
 	}
 
-	data, err := checker.CheckDependencyPolicy(ctx, purl, repoURL, repoName)
-	if err == nil {
-		return data
+	data, err := checker.CheckDependencyPolicy(ctx, purls, input.RepoURL, input.RepoName)
+	if err != nil {
+		return unavailableForError(err, input.RepoName)
 	}
+	return data
+}
 
+func unavailableForError(err error, repoName string) map[string]any {
 	switch {
 	case errors.Is(err, client.ErrUnauthorized):
 		slog.Error("fortify sca auth rejected", "error", err, "repo_name", repoName)
-		return unavailable("Unauthorized. Please check your FORTIFY_SCA_ACCESS_TOKEN.")
+		return authenticationRequired("The API rejected the credentials. Sign in again and verify the configured API host.")
 	case errors.Is(err, client.ErrAuth):
 		slog.Error("fortify sca authentication failed", "error", err, "repo_name", repoName)
-		return unavailable("Unable to authenticate with the Fortify SCA API.")
+		return authenticationRequired("Unable to obtain credentials. Sign in again using the configured credential source.")
 	case errors.Is(err, client.ErrEnterprise):
 		slog.Warn("fortify sca plan does not support policy checks", "repo_name", repoName)
 		return unavailable("Policy checks require a Fortify SCA Enterprise plan.")
@@ -199,4 +273,10 @@ func unavailable(reason string) map[string]any {
 		"recommendation": unavailableRecommendation,
 		"reason":         reason,
 	}
+}
+
+func authenticationRequired(reason string) map[string]any {
+	out := unavailable(reason)
+	out["errorCode"] = "AUTHENTICATION_REQUIRED"
+	return out
 }
