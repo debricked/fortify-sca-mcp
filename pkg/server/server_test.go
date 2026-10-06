@@ -41,10 +41,18 @@ func TestPolicyReportingGuidance(t *testing.T) {
 			"isPolicyCompliant is false",
 			"POLICY_CHECK_UNAVAILABLE",
 			"purls",
+			"blockingRuleIds",
+			"matches",
+			"approval",
 		} {
 			if !strings.Contains(text, required) {
 				t.Errorf("%s does not mention %q", name, required)
 			}
+		}
+	}
+	for _, required := range []string{"AUTHENTICATION_REQUIRED", "confirmed=true", "once after success", "Never loop logins"} {
+		if !strings.Contains(serverInstructions, required) {
+			t.Errorf("server instructions do not mention %q", required)
 		}
 	}
 }
