@@ -66,12 +66,21 @@ func TestCheckDependencyPolicy_StatusMappings(t *testing.T) {
 
 func TestCheckDependencyPolicy_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/1.0/open/agent/policy-check/check-dependency-policy" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
 		var request map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
 		if !reflect.DeepEqual(request["purls"], []any{"pkg:npm/react@19.1.8"}) {
 			t.Fatalf("expected one-item purls array, got %#v", request)
+		}
+		if request["repositoryUrl"] != "https://github.com/acme/repo" || request["repositoryName"] != "acme/repo" {
+			t.Fatalf("unexpected repository fields: %#v", request)
+		}
+		if _, exists := request["remoteUrl"]; exists {
+			t.Fatalf("unexpected legacy remoteUrl field: %#v", request)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
@@ -120,7 +129,7 @@ func TestCheckDependencyPolicy_Success(t *testing.T) {
 
 func TestCheckDependencyPolicy_PreservesGroupedMatches(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/1.0/open/repository/check-dependency-policy" {
+		if r.URL.Path != "/api/1.0/open/agent/policy-check/check-dependency-policy" {
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
 		var request map[string]any

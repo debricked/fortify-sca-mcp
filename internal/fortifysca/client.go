@@ -38,13 +38,13 @@ type Client struct {
 
 type checkPolicyRequest struct {
 	PURLs          []string `json:"purls"`
-	RemoteURL      string   `json:"remoteUrl"`
+	RepositoryURL  string   `json:"repositoryUrl"`
 	RepositoryName string   `json:"repositoryName"`
 }
 
 func NewClient(baseURL, apiVersion string, tokens auth.TokenProvider) *Client {
 	endpoint := fmt.Sprintf(
-		"%s/api/%s/open/repository/check-dependency-policy",
+		"%s/api/%s/open/agent/policy-check/check-dependency-policy",
 		strings.TrimRight(baseURL, "/"),
 		strings.TrimSpace(apiVersion),
 	)
@@ -80,7 +80,7 @@ func (c *Client) CheckDependencyPolicy(
 
 	payload, err := json.Marshal(checkPolicyRequest{
 		PURLs:          normalizedPURLs,
-		RemoteURL:      strings.TrimSpace(repoURL),
+		RepositoryURL:  strings.TrimSpace(repoURL),
 		RepositoryName: strings.Trim(strings.TrimSpace(repoName), "/"),
 	})
 	if err != nil {
