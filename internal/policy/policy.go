@@ -2,7 +2,7 @@ package policy
 
 import "context"
 
-// Checker is the policy operation required by the MCP adapter.
+// Checker checks one or more package URLs in a single policy request.
 type Checker interface {
-	CheckDependencyPolicy(ctx context.Context, purl, repoURL, repoName string) (map[string]any, error)
+	CheckDependencyPolicy(ctx context.Context, purls []string, repoURL, repoName string) (map[string]any, error)
 }

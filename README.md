@@ -116,7 +116,7 @@ Tool name:
 
 Required tool inputs:
 
-- `purl`: package URL including version (for example, `pkg:npm/lodash@4.17.21`)
+- `purls`: array of 1–5 distinct package URLs including versions; use a one-item array for one package
 - `repo_url`: git remote URL (SSH or HTTPS)
 - `repo_name`: repository slug with owner/org (for example, `my-org/my-repo`)
 
@@ -124,7 +124,7 @@ Example payload:
 
 ```json
 {
-	"purl": "pkg:npm/react@19.1.8",
+	"purls": ["pkg:npm/react@19.1.8"],
 	"repo_url": "https://github.com/my-org/my-repo",
 	"repo_name": "my-org/my-repo"
 }
@@ -135,6 +135,19 @@ Failure mode:
 - returns recommendation `POLICY_CHECK_UNAVAILABLE` with an actionable `reason`
   when input validation fails, Fortify SCA API auth/plan checks fail, network
   timeout occurs, or other API/runtime errors occur.
+
+The tool passes the purls array to the API and returns its envelope with one result per PURL and
+shared `blockingRules`. Resolve each
+result's `blockingRuleIds` to the matching rule and use that rule's `matches` entry for the
+package-specific evidence. Never attribute one package's evidence to another. The `summary` field
+is optional; individual results are authoritative.
+
+When started by the CLI with cached OAuth authentication, the optional `authenticate` tool reuses
+the `debricked auth login` browser flow. After `AUTHENTICATION_REQUIRED`, ask the user for permission
+and call it with `{"confirmed": true}`. It waits up to five minutes, stores credentials through the
+CLI, and clears the MCP bearer cache. Retry the original policy check once after login succeeds;
+login itself does not establish API access or policy compliance. The tool is not exposed in
+PAT-only mode, and the MCP host may require its own tool approval.
 
 ## Automatic Invocation
 
@@ -149,14 +162,19 @@ repository, also add a repo-level instruction file. For GitHub Copilot, create
 ```markdown
 ## Dependency policy
 
-Before adding, installing, upgrading, or recommending any third-party dependency, call the
-`check_dependency_policy_compliance` MCP tool for each package. This includes editing manifests or
-lockfiles, running install commands (`npm install`, `pip install`, `go get`, `cargo add`, ...),
-importing a package that is not already declared, and completing a feature that needs a new library.
+Before adding, installing, upgrading, importing, or recommending a dependency, call
+`check_dependency_policy_compliance` with 1–5 distinct, versioned PURLs (`purls`); use one for a
+single package.
 
-Never add a dependency before the check returns. If the recommendation blocks the package, do not
-add it — explain why and propose a compliant alternative (Max 3 attempts). If the result is
-`POLICY_CHECK_UNAVAILABLE`, surface that to the user before proceeding.
+- **Compliant:** Report the checked package/version as approved by Fortify SCA (Debricked).
+- **Blocked:** Do not add it. Report every rule's condition, package-specific trigger evidence, and
+  configuration URL when present. Disclose truncated results; never infer which OR branch matched.
+- **Unavailable:** Report the reason; do not claim approval.
+- **Alternatives:** For a blocked package, inspect its use and compatibility, then present up to
+  five exact, versioned PURLs as unchecked candidates. Ask approval for that exact list. After
+  approval, check all approved candidates in one call. Recommend only candidates that pass; report
+  each result and say if none pass. Approval permits checking only, not adding or installing.
+  Get fresh approval before checking a different candidate list.
 ```
 
 Equivalent files for other agents: `AGENTS.md`, `CLAUDE.md`, or `.cursor/rules/`.

@@ -6,6 +6,8 @@ import (
 	"strings"
 )
 
+const maxPolicyBatchSize = 5
+
 var (
 	purlPattern      = regexp.MustCompile(`^pkg:[a-zA-Z0-9]+/.+@.+$`)
 	httpsRepoPattern = regexp.MustCompile(`^https?://[a-zA-Z0-9.\-]+/(.+)$`)
@@ -115,6 +117,35 @@ func ValidateInputs(purl, repoURL, repoName string) (bool, string) {
 		return false, errMsg
 	}
 
+	return true, ""
+}
+
+func ValidateBatchInputs(purls []string, repoURL, repoName string) (bool, string) {
+	if len(purls) == 0 {
+		return false, "purls must contain at least one package"
+	}
+	if len(purls) > maxPolicyBatchSize {
+		return false, fmt.Sprintf("purls cannot contain more than %d packages", maxPolicyBatchSize)
+	}
+
+	seen := make(map[string]struct{}, len(purls))
+	for _, purl := range purls {
+		purl = strings.TrimSpace(purl)
+		if ok, errMsg := ValidatePURL(purl); !ok {
+			return false, errMsg
+		}
+		if _, exists := seen[purl]; exists {
+			return false, fmt.Sprintf("duplicate purl: %s", purl)
+		}
+		seen[purl] = struct{}{}
+	}
+
+	if ok, errMsg := ValidateRepoURL(repoURL); !ok {
+		return false, errMsg
+	}
+	if ok, errMsg := ValidateRepoName(repoName); !ok {
+		return false, errMsg
+	}
 	return true, ""
 }
 

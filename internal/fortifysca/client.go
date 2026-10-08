@@ -37,14 +37,14 @@ type Client struct {
 }
 
 type checkPolicyRequest struct {
-	PURL           string `json:"purl"`
-	RemoteURL      string `json:"remoteUrl"`
-	RepositoryName string `json:"repositoryName"`
+	PURLs          []string `json:"purls"`
+	RepositoryURL  string   `json:"repositoryUrl"`
+	RepositoryName string   `json:"repositoryName"`
 }
 
 func NewClient(baseURL, apiVersion string, tokens auth.TokenProvider) *Client {
 	endpoint := fmt.Sprintf(
-		"%s/api/%s/open/repository/check-dependency-policy",
+		"%s/api/%s/open/agent/policy-check/check-dependency-policy",
 		strings.TrimRight(baseURL, "/"),
 		strings.TrimSpace(apiVersion),
 	)
@@ -63,24 +63,49 @@ func newHTTPClient() *http.Client {
 	return &http.Client{Transport: baseTransport}
 }
 
+func (c *Client) InvalidateCredentials() {
+	c.tokens.Invalidate()
+}
+
 func (c *Client) CheckDependencyPolicy(
 	ctx context.Context,
-	purl string,
+	purls []string,
 	repoURL string,
 	repoName string,
 ) (map[string]any, error) {
+	normalizedPURLs := make([]string, len(purls))
+	for i, purl := range purls {
+		normalizedPURLs[i] = strings.TrimSpace(purl)
+	}
+
 	payload, err := json.Marshal(checkPolicyRequest{
-		PURL:           strings.TrimSpace(purl),
-		RemoteURL:      strings.TrimSpace(repoURL),
+		PURLs:          normalizedPURLs,
+		RepositoryURL:  strings.TrimSpace(repoURL),
 		RepositoryName: strings.Trim(strings.TrimSpace(repoName), "/"),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal payload: %w", err)
 	}
 
-	status, body, err := c.do(ctx, payload)
+	_, body, err := c.postPolicy(ctx, payload)
 	if err != nil {
 		return nil, err
+	}
+
+	var out map[string]any
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, fmt.Errorf("decode response JSON: %w", err)
+	}
+	if err := validateBatchResponse(out, normalizedPURLs); err != nil {
+		return nil, fmt.Errorf("invalid batch policy response: %w", err)
+	}
+	return out, nil
+}
+
+func (c *Client) postPolicy(ctx context.Context, payload []byte) (int, []byte, error) {
+	status, body, err := c.do(ctx, payload)
+	if err != nil {
+		return 0, nil, err
 	}
 
 	// A cached bearer may have been revoked server-side; refresh once and retry.
@@ -89,28 +114,175 @@ func (c *Client) CheckDependencyPolicy(
 		c.tokens.Invalidate()
 		status, body, err = c.do(ctx, payload)
 		if err != nil {
-			return nil, err
+			return 0, nil, err
 		}
 	}
 
 	if status == http.StatusUnauthorized {
-		return nil, ErrUnauthorized
+		return status, nil, ErrUnauthorized
 	}
 	if status == http.StatusPaymentRequired {
-		return nil, ErrEnterprise
+		return status, nil, ErrEnterprise
 	}
 
 	if status < 200 || status >= 300 {
 		slog.Error("fortify sca api returned an error status", "status", status)
-		return nil, fmt.Errorf("%w (%d): %s", ErrAPIStatus, status, string(body))
+		return status, nil, fmt.Errorf("%w (%d): %s", ErrAPIStatus, status, string(body))
 	}
 
-	var out map[string]any
-	if err := json.Unmarshal(body, &out); err != nil {
-		return nil, fmt.Errorf("decode response JSON: %w", err)
+	return status, body, nil
+}
+
+func validateBatchResponse(envelope map[string]any, requested []string) error {
+	if envelope["status"] != "policy_checked" {
+		return errors.New("status must be policy_checked")
+	}
+	results, ok := envelope["results"].([]any)
+	if !ok {
+		return errors.New("results must be an array")
+	}
+	if len(results) != len(requested) {
+		return fmt.Errorf("got %d results for %d requested packages", len(results), len(requested))
 	}
 
-	return out, nil
+	want := make(map[string]struct{}, len(requested))
+	for _, purl := range requested {
+		if _, duplicate := want[purl]; duplicate {
+			return fmt.Errorf("duplicate requested package %q", purl)
+		}
+		want[purl] = struct{}{}
+	}
+
+	seen := make(map[string]struct{}, len(results))
+	for _, rawResult := range results {
+		result, ok := rawResult.(map[string]any)
+		if !ok {
+			return errors.New("each result must be an object")
+		}
+		purl, ok := result["purl"].(string)
+		if !ok || purl == "" {
+			return errors.New("each result must identify its purl")
+		}
+		if _, requested := want[purl]; !requested {
+			return fmt.Errorf("response contains unrequested package %q", purl)
+		}
+		if _, duplicate := seen[purl]; duplicate {
+			return fmt.Errorf("response contains duplicate result for %q", purl)
+		}
+		seen[purl] = struct{}{}
+		switch result["status"] {
+		case "policy_checked":
+			if _, ok := result["isPolicyCompliant"].(bool); !ok {
+				return fmt.Errorf("result for %q has no compliance decision", purl)
+			}
+			if _, ok := result["recommendation"].(string); !ok {
+				return fmt.Errorf("result for %q has no recommendation", purl)
+			}
+			ids, ok := result["blockingRuleIds"].([]any)
+			if !ok {
+				return fmt.Errorf("result for %q has no blockingRuleIds array", purl)
+			}
+			count, ok := result["blockingRuleCount"].(float64)
+			if !ok || count < float64(len(ids)) {
+				return fmt.Errorf("result for %q has an invalid blockingRuleCount", purl)
+			}
+			truncated, ok := result["blockingRulesTruncated"].(bool)
+			if !ok || (!truncated && count != float64(len(ids))) {
+				return fmt.Errorf("result for %q has inconsistent blocking rule truncation metadata", purl)
+			}
+		case "error":
+			if _, ok := result["errorCode"].(string); !ok {
+				return fmt.Errorf("error result for %q has no errorCode", purl)
+			}
+			if _, ok := result["message"].(string); !ok {
+				return fmt.Errorf("error result for %q has no message", purl)
+			}
+			if _, ok := result["retryable"].(bool); !ok {
+				return fmt.Errorf("error result for %q has no retryable flag", purl)
+			}
+		default:
+			return fmt.Errorf("result for %q has unexpected status", purl)
+		}
+	}
+	for purl := range want {
+		if _, found := seen[purl]; !found {
+			return fmt.Errorf("response is missing result for %q", purl)
+		}
+	}
+
+	ruleByID := make(map[string]map[string]any)
+	if rawRules, exists := envelope["blockingRules"]; exists {
+		rules, ok := rawRules.([]any)
+		if !ok {
+			return errors.New("blockingRules must be an array")
+		}
+		for _, rawRule := range rules {
+			rule, ok := rawRule.(map[string]any)
+			if !ok {
+				return errors.New("each blocking rule must be an object")
+			}
+			id, exists := rule["ruleId"]
+			if !exists {
+				return errors.New("each blocking rule must have a ruleId")
+			}
+			key := fmt.Sprint(id)
+			if _, duplicate := ruleByID[key]; duplicate {
+				return fmt.Errorf("duplicate blocking rule %s", key)
+			}
+			matches, ok := rule["matches"].([]any)
+			if !ok {
+				return fmt.Errorf("blocking rule %s has no matches array", key)
+			}
+			for _, rawMatch := range matches {
+				match, ok := rawMatch.(map[string]any)
+				if !ok {
+					return fmt.Errorf("blocking rule %s contains an invalid match", key)
+				}
+				purl, ok := match["purl"].(string)
+				if !ok {
+					return fmt.Errorf("blocking rule %s match has no purl", key)
+				}
+				if _, requested := want[purl]; !requested {
+					return fmt.Errorf("blocking rule %s contains a match for unrequested package %q", key, purl)
+				}
+			}
+			ruleByID[key] = rule
+		}
+	}
+	for _, rawResult := range results {
+		result := rawResult.(map[string]any)
+		if result["status"] != "policy_checked" {
+			continue
+		}
+		ids := result["blockingRuleIds"].([]any)
+		truncated, _ := result["blockingRulesTruncated"].(bool)
+		purl := result["purl"].(string)
+		for _, id := range ids {
+			rule, exists := ruleByID[fmt.Sprint(id)]
+			if !exists {
+				if truncated {
+					continue
+				}
+				return fmt.Errorf("response omitted blocking rule %v for %q", id, purl)
+			}
+			matches, ok := rule["matches"].([]any)
+			if !ok {
+				return fmt.Errorf("blocking rule %v has no matches array", id)
+			}
+			matched := false
+			for _, rawMatch := range matches {
+				match, ok := rawMatch.(map[string]any)
+				if ok && match["purl"] == purl {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				return fmt.Errorf("blocking rule %v has no match for %q", id, purl)
+			}
+		}
+	}
+	return nil
 }
 
 func (c *Client) do(ctx context.Context, payload []byte) (int, []byte, error) {
